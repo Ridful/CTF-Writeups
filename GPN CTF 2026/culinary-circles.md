@@ -121,6 +121,9 @@ name=The Three Chimneys
 OSM: way/244132959   (≈ 57.443422, −6.641956)
 ```
 
+<img width="1143" height="734" alt="image" src="https://github.com/user-attachments/assets/a262dcc7-f1aa-40f6-a4b3-2c0bc7f7b793" />
+
+
 A famous fine-dining restaurant in Colbost, on Skye — and given how far it is from anywhere, the challenge's closing **"Takeout order"** is the punchline.
 
 ## Flag
