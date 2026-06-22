@@ -69,6 +69,9 @@ bitctf{{gh057ly_j1nj4_p0ss35510n}}
 
 That doubling is exactly what made the format look "inconsistent." `app.py` also exposes `sealed_checksum: len(FLAG)` in the context processor — a length side channel that would confirm the flag even without RCE.
 
+<img width="1199" height="735" alt="image" src="https://github.com/user-attachments/assets/629bb123-edee-4960-86de-2f65b7f04590" />
+
+
 ### Key Takeaways
 
 - Never pass user input to `render_template_string()`; use `render_template` with passed variables or a sandboxed environment.
