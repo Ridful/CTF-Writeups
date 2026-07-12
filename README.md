@@ -26,3 +26,7 @@ Contents:
 - V1t CTF 2026
 - - Discord
   - Tiny
+- BroncoCTF
+- - Diced and Sliced
+  - Dog Simulator
+  - Online Over-Sharer
