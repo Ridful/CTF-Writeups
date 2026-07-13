@@ -30,3 +30,10 @@ Contents:
 - - Diced and Sliced
   - Dog Simulator
   - Online Over-Sharer
+- Junior Crypt 2026 CTF
+- - After the Swarm
+  - FOOTBALLchik
+  - Invoice Without a Bank
+  - The USB That Wouldn't Repeat
+  - WhoAmI
+  - Кодэ
