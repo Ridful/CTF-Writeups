@@ -96,7 +96,7 @@ The good news was that all of this was based on the printed job ID, so nothing n
 
 I wrote a Python script to reverse the whole process.
 
-```
+```python
 #!/usr/bin/env python3
 
 import math
@@ -289,6 +289,3 @@ That is normal because the script is waiting for data from standard input.
 ```
 BDSEC{th3_pr1nt3r_d03s_n0t_pr1nt_1n_0rd3r}
 ```
-
-Pretty fun challenge. The printer was broken, but at least it was consistently broken.
-
