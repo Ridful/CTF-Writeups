@@ -1,14 +1,14 @@
 
 # Crack Me Vault — writeup
 
-so we get a file called `crack_me_vault.bdsec`. weird extension but whatever, `file` says it's just a normal stripped ELF binary wearing a costume. cool, let's just run it.
+so we get a file called `crack_me_vault.bdsec`. `file` says it's just a normal stripped ELF binary.
 
 ```
 $ file crack_me_vault.bdsec
 crack_me_vault.bdsec: ELF 64-bit LSB pie executable, x86-64, stripped
 ```
 
-yep. rename it, chmod +x, run it:
+chmod +x, run it:
 
 ```
 Enter the flag:
