@@ -1,67 +1,163 @@
+# Night Shift
 
-# Night Shift — writeup
+## Challenge info
 
-so we get handed a file called `night_shift.bdsec` and honestly the extension's a total lie, `file` says it's just an ELF binary wearing a costume. cool, whatever, chmod +x it and we're rolling.
+- **Name:** Night Shift
+- **Category:** Reverse Engineering
+- **File:** `night_shift.bdsec`
 
-## poking at it
+The challenge provides a file called:
 
-first move is always `strings`, just see what falls out:
-
+```text
+night_shift.bdsec
 ```
+
+Despite the custom extension, it is just a normal Linux ELF binary.
+
+## First look
+
+I started with the usual file and strings checks:
+
+```bash
+file night_shift.bdsec
+strings -a night_shift.bdsec
+```
+
+A few useful messages showed up:
+
+```text
 shift code>
 Eight assignments remain.
 The shift report was rejected.
 The morning report has been approved.
 ```
 
-so it wants some kind of code, 8 things, and it's either gonna yell at us or give us the good stuff. ran it once with garbage input just to see the shape of things — asks for a line, we type stuff, it judges us instantly. fair.
+So the program expects some kind of shift code containing eight values. If the code passes validation, it prints the approved report and presumably the flag.
 
-## digging into the guts
+Running it with random input confirmed that it reads one line, validates it immediately, and rejects anything incorrect.
 
-it's stripped so no nice function names, just vibes and addresses. threw it into `objdump` and started reading.
+## Input format
 
-turns out the input format is: 8 numbers separated by spaces, each one has to be `0`–`4`, parsed with `strtok_r` + `strtoul`. anything else and it bails straight to the rejection message. simple enough gate.
+The binary was stripped, so there were no helpful function names. Looking through the disassembly showed that the input is parsed using `strtok_r` and `strtoul`.
 
-past that gate it spins up **5 threads**, and they're all doing this synchronized dance with a mutex + condvar — basically taking turns so the 8 positions in your code get processed in strict order, one at a time, no cutting in line. each thread's ID matches one of your digit values, so really "thread 3" = "whoever's handling the digit-3 spots."
+The expected format is eight numbers separated by spaces:
 
-for each position it mixes some state (4 accumulator words that start life as the eternally funny `0xC001D00D` and `0x0BADF00D`) through a hash function that's basically [lowbias32](https://nullprogram.com/blog/2018/07/31/) — that xorshift-multiply integer hash thing, fully invertible, very tidy. digit value decides _which_ mixing branch runs (there's a jump table for it). there's also a running FNV-ish accumulator getting updated alongside it.
-
-after all 8 positions are chewed through, it checks the final state against four hardcoded 64-bit/32-bit constants. found these sitting right in the disassembly:
-
-```
-cmp QWORD PTR [rsp+0xe8], 0x75a2cc729c8a97dc
-cmp QWORD PTR [rsp+0xf0], 0x4969e73d1d87ef0f
-cmp DWORD PTR [rsp+0x118], 0x4455cee8
+```text
+d0 d1 d2 d3 d4 d5 d6 d7
 ```
 
-match all three (plus a sanity count check) → you get let into the good branch that prints the flag. miss any → straight back to rejected.
+Each number must be between `0` and `4`.
 
-## so how do we actually crack it
+Any invalid token, value outside that range, or incorrect number of entries sends execution directly to the rejection path.
 
-honest answer: **don't bother reverse engineering the hash by hand to invert it, just brute force the input space.** it's only digits 0–4, eight slots, so `5^8 = 390,625` combos. nothing.
+So the full search space is:
 
-wrote a python sim of the whole mixing pipeline (all 5 branches, the lowbias32 calls, the FNV mix, all of it) and just churned through every combo checking which one hits all three target constants:
+```text
+5^8 = 390,625
+```
+
+That is small enough to brute-force comfortably.
+
+## Threaded validation
+
+After parsing the input, the program creates five worker threads.
+
+The threads share a mutex and condition variable, which forces them to process the eight positions in a strict order. Each thread is responsible for positions whose digit matches its thread ID.
+
+For example, the thread associated with value `3` handles every position where the input digit is `3`.
+
+Despite the multithreaded setup, the condition variable makes the actual validation deterministic. Only one position is processed at a time, and the positions are handled in order.
+
+The threaded design mainly acts as obfuscation around what is effectively a sequential state update.
+
+## State mixing
+
+The validator maintains four accumulator values, along with a separate FNV-style running state.
+
+Some of the initial constants include:
+
+```text
+0xC001D00D
+0x0BADF00D
+```
+
+For each of the eight positions, the current digit selects one of five mixing branches through a jump table.
+
+The mixing function uses an invertible xorshift and multiplication sequence similar to the `lowbias32` integer hash. The selected branch updates the accumulator state, while the FNV-style value is updated alongside it.
+
+Once all eight positions have been processed, the binary compares the final state against several hardcoded targets:
+
+```text
+0x75a2cc729c8a97dc
+0x4969e73d1d87ef0f
+0x4455cee8
+```
+
+There is also a count check to confirm that all eight positions were processed correctly.
+
+If every comparison succeeds, the program reaches the approved-report path. Otherwise, it prints the rejection message.
+
+## Brute-forcing the code
+
+It would be possible to study each mixing operation and try to reverse the state transitions by hand, but that is unnecessary here.
+
+There are only 390,625 possible shift codes, so the cleanest approach is to reproduce the validation logic in Python and test the entire input space.
+
+The brute-force loop looks roughly like this:
 
 ```python
 for digits in itertools.product(range(5), repeat=8):
-    s, posArr, fnv = process(digits)
-    if fnv == TARGET_FNV and s == [TARGET_S0, TARGET_S1, TARGET_S2, TARGET_S3]:
-        print("found it:", digits)
+    state, positions, fnv = process(digits)
+
+    if (
+        fnv == TARGET_FNV
+        and state == [
+            TARGET_S0,
+            TARGET_S1,
+            TARGET_S2,
+            TARGET_S3,
+        ]
+    ):
+        print("found:", digits)
+        break
 ```
 
-got exactly **one match**: `(2, 0, 4, 1, 3, 0, 2, 4)`.
+The Python implementation reproduces:
 
-## the part where I almost shot myself in the foot
+- all five digit-specific mixing branches
+- the `lowbias32`-style transformations
+- the FNV-style accumulator
+- the final state comparisons
 
-so there's _also_ a decode step — once you pass the check, it prints 36 bytes, each one XORed against a keystream byte generated from another lowbias32-based mix that depends on your digit code and the position. reasonable move: reimplement that too in python and decode the flag offline without even touching the binary again.
+Searching the full input space produced exactly one valid code:
 
-except my python reimplementation of _that_ part had a bug in it somewhere (some bit of the position-table indexing or rotation amount got flipped, never fully chased it down) and it spat out a pile of non-printable garbage instead of a flag. classic.
-
-but here's the thing — I didn't actually need to reverse-engineer the decode step at all. the digit code itself was already confirmed correct because it satisfied the _exact_ hardcoded comparisons the binary itself uses to decide pass/fail. so instead of debugging my own broken decode logic, just... let the binary do what it's already good at:
-
+```text
+2 0 4 1 3 0 2 4
 ```
-$ echo "2 0 4 1 3 0 2 4" | ./night_shift
 
+## A failed detour
+
+After recovering the correct code, I also tried to reproduce the binary's final flag-decoding routine in Python.
+
+The success path decrypts 36 bytes using a keystream generated from another `lowbias32`-style transformation. The keystream depends on the recovered digits, the current position, rotations, and an internal position table.
+
+My first reimplementation had a mistake somewhere in that logic, likely in the table indexing or rotation calculation, and produced non-printable output instead of the flag.
+
+Fortunately, none of that was needed.
+
+The shift code had already been verified against the exact hardcoded state comparisons used by the binary. Instead of debugging a second implementation of the decoder, I could simply pass the confirmed code back into the original program.
+
+## Verification
+
+I ran the binary with the recovered shift code:
+
+```bash
+echo "2 0 4 1 3 0 2 4" | ./night_shift
+```
+
+The program printed:
+
+```text
 ========================================
               NIGHT SHIFT
 ========================================
@@ -73,12 +169,18 @@ shift code> The morning report has been approved.
 BDSEC{0rd3r_h1d3s_b3tw33n_th3_l1n3s}
 ```
 
-approved, flag printed, done. moral of the story: if the _checker_ already told you the input's right, you don't need to also independently reinvent the _decryptor_ — just feed the confirmed-correct input back into the real thing and let it show its own work.
+So the result was verified directly with the original challenge binary.
 
-## flag
+## Flag
 
-```
+```text
 BDSEC{0rd3r_h1d3s_b3tw33n_th3_l1n3s}
 ```
 
-pretty fitting name for a challenge that's basically "figure out which order the threads eat your digits in."
+## Final thoughts
+
+This was a fun reversing challenge with a nice concurrency theme.
+
+The five-thread setup initially makes the validation look more complicated, but the mutex and condition variable force everything to happen in a predictable order. Once the state transitions are reproduced, the problem becomes a small brute-force search over only 390,625 possible codes.
+
+The main lesson was also a practical one. Once the recovered input satisfied the binary's real validation checks, there was no need to perfectly reimplement the final decoder. Feeding the confirmed code into the original program was simpler and more reliable.
