@@ -39,3 +39,17 @@ Contents:
   - Кодэ
 - ENOWARS 10
 - - ENOWARS 10 (Writeup for full Attack-Defense CTF)
+- OMNICTF 2026 Quals
+- - SOON
+- BDSEC CTF 2026
+- - Admin Portal
+- - Borrowed Memory
+- - Broken Printer
+- - Cold Start
+- - Crack Me Vault
+- - Easy RE Challenge
+- - Ekusher Shobdo
+- - Muktir Shongket
+- - Night Shift
+- - Phantom Device
+- - Ticketly
