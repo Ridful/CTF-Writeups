@@ -1,7 +1,7 @@
-
 # Admin Portal — BDSEC CTF Writeup
 
-**Category:** Web **Difficulty:** Easy / Intermediate
+**Category:** Web
+**Difficulty:** Easy / Intermediate
 Flag: `bdsec{n0ne_4lg_m34ns_n0_s1gn4tur3}`
 
 ## The vibe
@@ -69,5 +69,3 @@ And boom:
 ## Takeaway
 
 If your JWT library lets the token pick its own algorithm without pinning it server-side, you don't actually have a signed token — you have a suggestion. Always hardcode the expected `alg` on the verifying side and reject anything else outright.
-
-GG, next challenge.
