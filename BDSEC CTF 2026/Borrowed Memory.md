@@ -1,7 +1,7 @@
-
 # Borrowed Memory — writeup (BDSEC CTF 2026)
 
-**category:** rev **flag:** `BDSEC{p01nt3rs_l13_bUt_0ffs3ts_r3m3mb3r}`
+**category:** rev
+**flag:** `BDSEC{p01nt3rs_l13_bUt_0ffs3ts_r3m3mb3r}`
 
 so this one's called "borrowed memory" and honestly the name is doing a lot of foreshadowing lol. let's just walk through it chill style.
 
@@ -106,6 +106,4 @@ and it happily decrypted its own flag bytes and printed:
 - "stripped binary with a hand-rolled VM" sounds scarier than it is once you notice the control flow doesn't actually depend on your input — sometimes the fastest path isn't a full static reverse-engineer, it's letting the program tell on itself.
 - gdb breakpoint `commands` blocks are severely underrated for this kind of "watch it compute, steal the answer" move.
 - flag name checks out — the whole challenge is just pointers wandering around memory that "remembers" its own offsets regardless of what lies you feed it.
-
-gg 🍃
 
