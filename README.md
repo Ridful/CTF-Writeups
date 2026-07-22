@@ -40,7 +40,7 @@ Contents:
 - ENOWARS 10
 - - ENOWARS 10 (Writeup for full Attack-Defense CTF)
 - OMNICTF 2026 Quals
-- - SOON
+- - Fear
 - BDSEC CTF 2026
 - - Admin Portal
 - - Borrowed Memory
