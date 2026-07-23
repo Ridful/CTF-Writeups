@@ -1,478 +1,440 @@
-# Fruit Market
+# Culinary Circles
 
 ## Challenge info
 
-- **Name:** fruit-market
-- **Event:** GPNCTF 2026
-- **Category:** Misc / Blockchain
-- **Author:** tamedfox
+- **Name:** Culinary Circles
+- **Event:** GPN CTF
+- **Category:** Miscellaneous / OSINT / Geometry
+- **Author:** Alkalem
+- **Flag format:** `GPNCTF{.*}`
 
-The challenge presents itself as a fruit-trading job.
+The challenge provides an archive containing nine restaurant screenshots.
 
-We are hired as a transaction coordinator for a blockchain marketplace and are responsible for submitting customer trades before they expire.
+The flavor text keeps referring to social circles, culinary circles, and rare intersections. That wording is very literal. The nine restaurant locations can be divided into three groups, each group defines a circle on the globe, and all three circles meet near one restaurant.
 
-The important part is that we are not just observing the transaction flow. We control which transactions reach the chain and in what order.
-
-That makes the coordinator role a perfect setup for a sandwich attack.
+The challenge also explicitly says to use OpenStreetMap as the source of truth for location names.
 
 ## First look
 
-The provided files contain three main components:
-
-- `eth/MiniDex.sol` and `eth/ERCFixed.sol`
-- `python/main.py`, `python/trader.py`, and `python/utils.py`
-- a small HTML operator panel using Bootstrap and Socket.IO
-
-The blockchain setup contains three ERC-20 tokens:
+Extracting `culinary-circles.tar.gz` gives nine PNG files:
 
 ```text
-APL  apples
-BAN  bananas
-CHY  cherries
+adam.png
+alice.png
+alkalem.png
+beatrice.png
+bob.png
+bruno.png
+carol.png
+catherine.png
+cristoph.png
 ```
 
-Each token has a total supply of 1000 base units.
+Each image shows a restaurant or food-related location.
 
-There is no decimal scaling involved, so every balance and swap amount is a small integer. That becomes useful later because we can brute-force the best trade size very cheaply.
+Some are straightforward map cards or Street View screenshots. Others are deliberately cropped or framed in a way that makes identification harder.
 
-The three liquidity pools begin with:
+There is no obvious metadata or hidden file structure to exploit. The first part of the challenge is simply geolocating all nine screenshots.
+
+## Geolocating the restaurants
+
+I used the usual geo-OSINT methods:
+
+- reverse image search
+- Google Lens
+- visible signs and branding
+- road markings
+- architecture
+- driving side
+- local businesses
+- marina and street layouts
+
+The nine locations were:
+
+| Person | Restaurant | Location | Latitude | Longitude |
+|---|---|---|---:|---:|
+| **Alkalem** | Kippe 23 | Karlsruhe, Germany | 49.00748 | 8.41930 |
+| **Adam** | Hofu | Køge, Denmark | 55.45690 | 12.17853 |
+| **Alice** | The Peppermill | Nenagh, Ireland | 52.86181 | -8.19826 |
+| **Beatrice** | BCHEF Burgers | Dijon, France | 47.32267 | 5.03815 |
+| **Bob** | Pastéis de Belém | Lisbon, Portugal | 38.69755 | -9.20324 |
+| **Bruno** | Mairie Restaurant & Events | Berkel en Rodenrijs, Netherlands | 51.99574 | 4.47555 |
+| **Carol** | Skeppsbro Bakery | Stockholm, Sweden | 59.32471 | 18.07612 |
+| **Catherine** | High-street unit | Armadale / Livingston area, UK | 55.89847 | -3.70242 |
+| **Cristoph** | Café Marina | Sønderborg, Denmark | 54.89936 | 9.79558 |
+
+A few of these needed more work than the others.
+
+### Bob
+
+The screenshot was cropped in a way that hid most of the recognizable branding.
+
+Reverse image search on the remaining facade still matched it to:
 
 ```text
-APL-BAN: 100 APL / 200 BAN
-BAN-CHY: 100 BAN / 200 CHY
-APL-CHY: 100 APL / 400 CHY
+Pastéis de Belém
 ```
 
-The application also launches three automated traders.
+in Lisbon.
 
-## Bot behavior
+### Bruno
 
-The trading strategy is defined in `trader.py`:
+This image showed a Dutch-looking waterfront area with construction equipment nearby.
+
+The first guesses based on the general appearance were misleading. Following the road layout and checking the actual map pin eventually led to:
+
+```text
+Mairie Restaurant & Events
+```
+
+in Berkel en Rodenrijs.
+
+This was a good reminder to trust the map evidence more than the overall visual impression.
+
+### Catherine
+
+The large satellite image was mostly a distraction.
+
+The useful clue was the small Street View thumbnail in the corner. It showed:
+
+- a red-brick high street
+- cars driving on the left
+- double yellow lines
+- a typical UK streetscape
+
+The mouse cursor was also placed over the relevant area, which helped narrow the location considerably.
+
+### Cristoph
+
+The image showed a marina restaurant with an Albani-branded parasol.
+
+Albani is a Danish brewery, which pointed toward Denmark. The marina signage and waterfront layout then matched:
+
+```text
+Café Marina
+```
+
+in Sønderborg.
+
+## The grouping trick
+
+Once all nine locations were identified, the filenames became important.
+
+Grouping them by first letter gives three sets of three:
+
+```text
+A:
+Alkalem
+Adam
+Alice
+```
+
+```text
+B:
+Beatrice
+Bob
+Bruno
+```
+
+```text
+C:
+Carol
+Catherine
+Cristoph
+```
+
+Three points uniquely define a circle.
+
+So each group of three restaurant locations defines one circumcircle:
+
+- Circle A through the three A locations
+- Circle B through the three B locations
+- Circle C through the three C locations
+
+The phrase about culinary circles intersecting was telling us exactly what to do.
+
+This also rules out a few tempting wrong approaches. The points are not meant to be paired for trilateration, and the distances between alphabetically related names are not the important part.
+
+The structure is simply:
+
+```text
+three triplets -> three circles -> shared intersection
+```
+
+## Why flat geometry is not enough
+
+These locations are spread across a large part of Europe.
+
+Treating latitude and longitude as ordinary Cartesian coordinates and drawing flat circles gives inaccurate results. At this scale, the curvature of the Earth matters.
+
+The correct model is a spherical circumcircle.
+
+Each latitude and longitude pair can be converted into a unit vector:
 
 ```python
-# Ultimate Trading Strategy:
-# Take what you have most of, and swap it with something else!
-balance = self.balance()
-trade_token = max(balance, key=balance.get)
-trade_amount = max(int(balance[trade_token] * 0.5), 1)
+def to_xyz(lat, lon):
+    lat = math.radians(lat)
+    lon = math.radians(lon)
+
+    return (
+        math.cos(lat) * math.cos(lon),
+        math.cos(lat) * math.sin(lon),
+        math.sin(lat),
+    )
 ```
 
-Each bot finds the token it currently owns the most of and sells half of that balance.
+For three points represented by unit vectors `v1`, `v2`, and `v3`, the plane through them has a normal vector:
 
-One bot begins with 400 APL, which means it will repeatedly submit large apple sales.
+```text
+n = normalize((v2 - v1) × (v3 - v1))
+```
 
-That is especially useful because the win condition requires us to accumulate apples.
+That normal is the pole of the spherical circle.
 
-## Win condition
+The angular radius is:
 
-The `/flag` endpoint checks the manager's APL balance:
+```text
+r = arccos(n · v1)
+```
+
+Every point `X` on that spherical circle satisfies:
+
+```text
+n · X = cos(r)
+```
+
+## Solving for the shared intersection
+
+Each of the three circles gives one plane equation:
+
+```text
+nA · X = cos(rA)
+nB · X = cos(rB)
+nC · X = cos(rC)
+```
+
+These can be written as a linear system:
+
+```text
+M X = b
+```
+
+where the rows of `M` are the three circle normals.
+
+Solving the system gives a 3D point `X0`. If the circles truly share one point on Earth, the length of `X0` should be very close to 1.
+
+The calculated circles were approximately:
+
+```text
+Circle A
+Pole: 53.683, 2.006
+Radius: 6.15 degrees
+
+Circle B
+Pole: 48.123, -8.945
+Radius: 9.43 degrees
+
+Circle C
+Pole: 61.252, 4.679
+Radius: 6.90 degrees
+```
+
+The linear solve produced:
+
+```text
+||X0|| = 0.999973
+```
+
+That is extremely close to 1, confirming that the three circles were intentionally constructed to meet on the sphere.
+
+The shared intersection was approximately:
+
+```text
+57.4356, -6.5975
+```
+
+That lands on the Isle of Skye in Scotland.
+
+<img width="1143" height="734" alt="image" src="https://github.com/user-attachments/assets/42544bee-ec41-4257-ae42-d3accc67df07" />
+
+## Finding the restaurant
+
+Because the original geolocation coordinates came from screenshots and map pins, the circle intersection was not perfectly exact.
+
+Small differences between Google pin centers and OpenStreetMap venue coordinates produced a small cluster rather than one mathematically perfect point.
+
+The challenge specifically said to use OpenStreetMap as the source of truth, so I checked the area around the intersection there.
+
+The restaurant at the intended location was:
+
+```text
+The Three Chimneys
+```
+
+Its OpenStreetMap location is approximately:
+
+```text
+57.443422, -6.641956
+```
+
+That matches the intersection closely enough given the precision of the nine source coordinates.
+
+The closing phrase `Takeout order` also fits nicely, since the final restaurant is in a fairly remote part of the Isle of Skye.
+
+## Solver
 
 ```python
-@app.get("/flag")
-def flag():
-    if balance_erc(ETH_SETUP["ercs"]["APL"], MANAGER) >= 500:
-        return "Wow! Here is your flag:\n" + os.environ.get("FLAG", ...)
-```
+import math
+import numpy as np
 
-We need at least:
 
-```text
-500 APL
-```
+def to_xyz(lat, lon):
+    lat = math.radians(lat)
+    lon = math.radians(lon)
 
-There are only 1000 apples in total.
-
-The initial distribution leaves the manager with 10 APL after claiming the fruit basket, so the goal is to turn those 10 apples into at least 500.
-
-## Application endpoints
-
-The important endpoints are:
-
-```text
-GET  /setup
-POST /fruit-basket
-GET  /open
-POST /submit
-POST /
-```
-
-Their roles are:
-
-- `/setup` returns the deployed contract addresses.
-- `/fruit-basket` registers our address as the manager and transfers 10 APL plus ETH.
-- `/open` starts the customer bot worker.
-- `/submit` accepts a signed raw transaction and broadcasts it.
-- `/` acts as a restricted JSON-RPC proxy for read-only methods.
-
-The RPC proxy allows methods such as `eth_call`, balance queries, nonce queries, and gas price lookups.
-
-It does not allow:
-
-```text
-eth_sendRawTransaction
-```
-
-All state-changing transactions must be sent through `/submit`.
-
-## The critical design flaw
-
-The bot worker creates signed transactions and emits them over Socket.IO:
-
-```python
-txs = t.next()
-if txs is not None:
-    socketio.emit(
-        "new_trade",
-        {
-            "approve": ...,
-            "swap": ...,
-            "swap_hash": ...,
-        },
-    )
-```
-
-The worker does not submit those transactions itself.
-
-It only sends the signed bytes to every connected client.
-
-The coordinator is expected to relay them through `/submit`.
-
-That means we have:
-
-- the customer's fully signed transaction before execution
-- full control over whether it is included
-- full control over its position relative to our own transactions
-- the ability to inject our own trades before and after it
-
-The coordinator effectively controls the mempool and block ordering.
-
-The challenge description mentions that our neutrality makes the marketplace safe. Nothing in the application actually enforces that neutrality.
-
-## Dead ends
-
-Before recognizing the transaction-ordering attack, I tested several other ideas.
-
-### Reentrancy
-
-`MiniDex` inherits from `ReentrancyGuard`, and the swap function is marked `nonReentrant`.
-
-The tokens are normal OpenZeppelin ERC-20 implementations without transfer hooks or callbacks.
-
-There was no useful reentrancy surface.
-
-### Replaying customer transactions
-
-The application broadcasts each customer's signed approval and swap transactions.
-
-Replaying them does not redirect any assets to us.
-
-The transactions are tied to the customer's address and nonce, and the DEX transfers assets on behalf of that same customer.
-
-Resubmitting them only performs the customer's intended trade.
-
-### Abusing the RPC proxy
-
-The setup uses Anvil internally, so methods such as `anvil_setBalance` would have been useful.
-
-However, the JSON-RPC proxy has a strict read-only allowlist.
-
-Both `anvil_setBalance` and `eth_sendRawTransaction` are blocked.
-
-### AMM rounding
-
-The DEX output formula is:
-
-```solidity
-uint256 newOutputReserve =
-    (inputReserve * outputReserve) / newInputReserve;
-
-outputAmount =
-    outputReserve - newOutputReserve;
-```
-
-Because the division is rounded down before subtraction, the final output is effectively rounded upward in the trader's favor.
-
-For example, in the APL-CHY pool:
-
-```text
-10 APL -> 37 CHY
-37 CHY -> 11 APL
-```
-
-A round trip gains one apple.
-
-This is a real flaw, especially because the DEX charges no fee, but it is not enough to reach 500 APL efficiently. The pool only begins with 100 apples, and the gain becomes less useful as the reserves change.
-
-The rounding issue was a good clue that the AMM lacked several normal protections, but it was not the main exploit.
-
-## The actual vulnerability
-
-The DEX swap function checks a deadline and requires a nonzero output.
-
-It does not accept a minimum output amount.
-
-There is no equivalent of:
-
-```solidity
-require(outputAmount >= minAmountOut);
-```
-
-So customer trades have no slippage protection.
-
-This becomes exploitable because we know every trade in advance and control the ordering.
-
-Whenever a customer sells APL, we can perform a sandwich:
-
-1. Sell our APL into the same pool first.
-2. Submit the customer's APL sale.
-3. Sell the token received in step one back into the pool.
-
-The first trade changes the reserves and pushes down the price of APL.
-
-The customer's transaction then executes at a much worse rate, but it cannot revert because it does not specify a minimum acceptable output.
-
-The customer's sale adds a large amount of cheap APL to the pool.
-
-Our final trade buys those apples back.
-
-The customer's slippage becomes our profit.
-
-## Example sandwich
-
-Suppose the APL-CHY pool begins at:
-
-```text
-100 APL / 400 CHY
-```
-
-We hold 10 APL, and the customer is about to sell 200 APL.
-
-### Front-run
-
-We sell 10 APL:
-
-```text
-10 APL -> 37 CHY
-```
-
-The reserves become approximately:
-
-```text
-110 APL / 363 CHY
-```
-
-### Customer trade
-
-The customer sells 200 APL:
-
-```text
-200 APL -> 235 CHY
-```
-
-The pool becomes:
-
-```text
-310 APL / 128 CHY
-```
-
-### Back-run
-
-We sell our 37 CHY back:
-
-```text
-37 CHY -> 70 APL
-```
-
-Our balance changes from:
-
-```text
-10 APL
-```
-
-to:
-
-```text
-70 APL
-```
-
-That is a 60-apple profit from a single customer trade.
-
-The attack compounds because the next sandwich can use the larger APL balance.
-
-## Choosing the front-run amount
-
-Since all balances are small integers, I reproduced the DEX formula in Python.
-
-For each customer APL sale, I tested every possible front-run size from zero through my current APL balance.
-
-For each candidate, the simulation performed:
-
-1. my APL sale
-2. the customer's APL sale
-3. my reverse trade
-
-The candidate that left me with the most APL was selected.
-
-This is fast enough to do live because the search range is tiny.
-
-It also prevents accidentally taking an unprofitable sandwich when a pool becomes too shallow.
-
-## Decoding customer transactions
-
-The Socket.IO event includes the customer's signed approval and swap transactions.
-
-To identify which trades should be sandwiched, I decoded the raw swap transaction.
-
-The target function is:
-
-```solidity
-swap(uint256,address,uint256)
-```
-
-with selector:
-
-```text
-0x43264349
-```
-
-The calldata layout is:
-
-```text
-4 bytes   function selector
-32 bytes  input amount
-32 bytes  input token address
-32 bytes  deadline
-```
-
-For typed Ethereum transactions, I RLP-decoded the envelope and extracted:
-
-```text
-to   = fields[5]
-data = fields[7]
-```
-
-Then I parsed the amount and input token from the calldata.
-
-If the input token was not APL, I simply relayed the customer's approval and swap.
-
-If the input token was APL, I performed the sandwich.
-
-## Transaction flow
-
-The core handler looked roughly like this:
-
-```python
-def handle_trade(payload):
-    to, data = decode_to_data(payload["swap"])
-
-    if data[:4] != SWAP_SELECTOR:
-        return
-
-    input_amount = int.from_bytes(data[4:36], "big")
-    input_token = Web3.to_checksum_address(
-        data[36:68][-20:]
+    return (
+        math.cos(lat) * math.cos(lon),
+        math.cos(lat) * math.sin(lon),
+        math.sin(lat),
     )
 
-    if input_token != APL:
-        submit(payload["approve"])
-        submit(payload["swap"])
-        return
 
-    reserve_a, reserve_b = (
-        dex.functions.getReserves().call()
+def to_ll(vector):
+    x, y, z = vector
+
+    return (
+        math.degrees(math.asin(z)),
+        math.degrees(math.atan2(y, x)),
     )
 
-    apl_reserve, target_reserve = (
-        (reserve_a, reserve_b)
-        if token_a == APL
-        else (reserve_b, reserve_a)
+
+def subtract(a, b):
+    return (
+        a[0] - b[0],
+        a[1] - b[1],
+        a[2] - b[2],
     )
 
-    front_amount, _ = best_frontrun(
-        apl_reserve,
-        target_reserve,
-        input_amount,
-        apl_balance(),
+
+def cross(a, b):
+    return (
+        a[1] * b[2] - a[2] * b[1],
+        a[2] * b[0] - a[0] * b[2],
+        a[0] * b[1] - a[1] * b[0],
     )
 
-    if front_amount:
-        send_my_call(
-            dex,
-            "swap",
-            [front_amount, APL, FAR],
-            200_000,
+
+def dot(a, b):
+    return (
+        a[0] * b[0]
+        + a[1] * b[1]
+        + a[2] * b[2]
+    )
+
+
+def normalize(vector):
+    magnitude = math.sqrt(dot(vector, vector))
+
+    return (
+        vector[0] / magnitude,
+        vector[1] / magnitude,
+        vector[2] / magnitude,
+    )
+
+
+def spherical_circle(point1, point2, point3):
+    v1 = to_xyz(*point1)
+    v2 = to_xyz(*point2)
+    v3 = to_xyz(*point3)
+
+    normal = normalize(
+        cross(
+            subtract(v2, v1),
+            subtract(v3, v1),
+        )
+    )
+
+    if dot(normal, v1) < 0:
+        normal = (
+            -normal[0],
+            -normal[1],
+            -normal[2],
         )
 
-    submit(payload["approve"])
-    submit(payload["swap"])
+    radius = math.acos(
+        max(-1, min(1, dot(normal, v1)))
+    )
 
-    target_balance = balance(target_token)
+    return normal, radius
 
-    if target_balance:
-        send_my_call(
-            dex,
-            "swap",
-            [target_balance, target_token, FAR],
-            200_000,
-        )
 
-    try_flag()
+groups = {
+    "A": [
+        (49.00748, 8.41930),
+        (55.45690, 12.17853),
+        (52.86181, -8.19826),
+    ],
+    "B": [
+        (47.32267, 5.03815),
+        (38.69755, -9.20324),
+        (51.99574, 4.47555),
+    ],
+    "C": [
+        (59.32471, 18.07612),
+        (55.89847, -3.70242),
+        (54.89936, 9.79558),
+    ],
+}
+
+poles = []
+cosines = []
+
+for name, points in groups.items():
+    normal, radius = spherical_circle(*points)
+
+    poles.append(normal)
+    cosines.append(math.cos(radius))
+
+    pole_lat, pole_lon = to_ll(normal)
+
+    print(
+        f"Circle {name}: "
+        f"pole={pole_lat:.3f},{pole_lon:.3f} "
+        f"radius={math.degrees(radius):.3f}"
+    )
+
+x0 = np.linalg.solve(
+    np.array(poles),
+    np.array(cosines),
+)
+
+point = x0 / np.linalg.norm(x0)
+latitude, longitude = to_ll(tuple(point))
+
+print(f"||X0|| = {np.linalg.norm(x0):.6f}")
+print(f"Intersection = {latitude:.6f}, {longitude:.6f}")
 ```
 
-A lock around the Socket.IO handler was also important so that two incoming trades could not interleave and break our nonce ordering.
-
-## Practical details
-
-Several implementation details mattered:
-
-- Read-only Web3 calls went through the JSON-RPC proxy.
-- Signed write transactions were sent through `/submit`.
-- I pre-approved every DEX to spend both relevant tokens.
-- Bot transaction hex strings needed normalization because they did not always include a `0x` prefix.
-- The customer approval had to be submitted before the customer's swap.
-- My own transaction nonces had to remain strictly ordered.
-
-## Result
-
-The APL balance grew quickly:
-
-```text
-Starting balance: 10 APL
-
-200 APL customer sale -> 70 APL
-150 APL customer sale -> 206 APL
-160 APL customer sale -> 362 APL
- 75 APL customer sale -> 436 APL
- 80 APL customer sale -> 518 APL
-```
-
-After five sandwiches, the manager held more than the required 500 apples.
-
-The `/flag` endpoint returned:
-
-```text
-Wow! Here is your flag:
-GPNCTF{l0ok_M4m4_1_GO7_s0m3_fruI75_At_My_joB}
-```
+Running it gives an intersection on the Isle of Skye, close to The Three Chimneys.
 
 ## Flag
 
 ```text
-GPNCTF{l0ok_M4m4_1_GO7_s0m3_fruI75_At_My_joB}
+GPNCTF{The Three Chimneys}
 ```
 
 ## Final thoughts
 
-This was a very nice MEV challenge disguised as a miscellaneous task.
+This was a really nice OSINT challenge where the geolocation work was only the first half.
 
-The Solidity contract does not contain one dramatic bug. The real weakness comes from combining three design choices:
+The filenames provided the structure, the flavor text explained the geometry, and the OpenStreetMap note told us how to resolve the final location into a restaurant name.
 
-- customers reveal signed trades before execution
-- the coordinator controls inclusion and ordering
-- swaps have no minimum output protection
+The main lessons were:
 
-Any one of those might be acceptable in a different trust model. Together, they give the coordinator complete control over customer slippage.
+- geolocate all nine images before trying to force a pattern
+- group the locations by filename prefix
+- use spherical geometry rather than flat latitude and longitude
+- treat OpenStreetMap as the final authority for the restaurant name
+- expect small coordinate errors when working from screenshots and map pins
 
-The challenge description even points directly at the broken assumption by emphasizing the coordinator's neutrality.
-
-In a real DEX, a customer would provide a `minAmountOut` based on their acceptable slippage. A front-run that moved the price too far would then cause the customer's swap to revert instead of handing the attacker a guaranteed profit.
+Once the three triplets were recognized as circumcircles, the challenge title and description made perfect sense.
