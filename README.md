@@ -53,3 +53,5 @@ Contents:
 - - Night Shift
 - - Phantom Device
 - - Ticketly
+- - Linkspire
+- - Cordination Password
